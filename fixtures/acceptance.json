@@ -1,0 +1,158 @@
+{
+  "scenario": "人工智能合作项目会费与服务权益清算账本",
+  "synthetic": true,
+  "records": [
+    {
+      "record_id": "member_account-001",
+      "payload": {
+        "member_category": "member_category-0",
+        "member_id": "member_id-1",
+        "assessment_basis": 0.47,
+        "outstanding_amount": 0.58,
+        "payment_coverage": 0.69,
+        "waiver_amount": 21.5,
+        "entitlement_units": 23.4,
+        "assessment_amount": 25.3,
+        "fx_variance": 0.36,
+        "delinquency_risk": 0.47,
+        "service_cost": 31.0,
+        "invoice_count": 32.9
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-002",
+      "payload": {
+        "member_category": "member_category-1",
+        "member_id": "member_id-2",
+        "assessment_basis": 0.58,
+        "outstanding_amount": 0.69,
+        "payment_coverage": 0.8,
+        "waiver_amount": 25.2,
+        "entitlement_units": 27.1,
+        "assessment_amount": 29.0,
+        "fx_variance": 0.47,
+        "delinquency_risk": 0.58,
+        "service_cost": 34.7,
+        "invoice_count": 36.6
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-003",
+      "payload": {
+        "member_category": "member_category-2",
+        "member_id": "member_id-3",
+        "assessment_basis": 0.69,
+        "outstanding_amount": 0.8,
+        "payment_coverage": 0.91,
+        "waiver_amount": 28.9,
+        "entitlement_units": 30.8,
+        "assessment_amount": 32.7,
+        "fx_variance": 0.58,
+        "delinquency_risk": 0.69,
+        "service_cost": 38.4,
+        "invoice_count": 40.3
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-004",
+      "payload": {
+        "member_category": "member_category-3",
+        "member_id": "member_id-4",
+        "assessment_basis": 0.8,
+        "outstanding_amount": 0.91,
+        "payment_coverage": 0.25,
+        "waiver_amount": 32.6,
+        "entitlement_units": 34.5,
+        "assessment_amount": 36.4,
+        "fx_variance": 0.69,
+        "delinquency_risk": 0.8,
+        "service_cost": 42.1,
+        "invoice_count": 44.0
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-005",
+      "payload": {
+        "member_category": "member_category-4",
+        "member_id": "member_id-0",
+        "assessment_basis": 0.91,
+        "outstanding_amount": 0.25,
+        "payment_coverage": 0.36,
+        "waiver_amount": 36.3,
+        "entitlement_units": 38.2,
+        "assessment_amount": 40.1,
+        "fx_variance": 0.8,
+        "delinquency_risk": 0.91,
+        "service_cost": 45.8,
+        "invoice_count": 47.7
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-006",
+      "payload": {
+        "member_category": "member_category-0",
+        "member_id": "member_id-1",
+        "assessment_basis": 0.25,
+        "outstanding_amount": 0.36,
+        "payment_coverage": 0.47,
+        "waiver_amount": 40.0,
+        "entitlement_units": 41.9,
+        "assessment_amount": 43.8,
+        "fx_variance": 0.91,
+        "delinquency_risk": 0.25,
+        "service_cost": 49.5,
+        "invoice_count": 51.4
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-007",
+      "payload": {
+        "member_category": "member_category-1",
+        "member_id": "member_id-2",
+        "assessment_basis": 0.36,
+        "outstanding_amount": 0.47,
+        "payment_coverage": 0.58,
+        "waiver_amount": 43.7,
+        "entitlement_units": 45.6,
+        "assessment_amount": 47.5,
+        "fx_variance": 0.25,
+        "delinquency_risk": 0.36,
+        "service_cost": 53.2,
+        "invoice_count": 55.1
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    },
+    {
+      "record_id": "member_account-008",
+      "payload": {
+        "member_category": "member_category-2",
+        "member_id": "member_id-3",
+        "assessment_basis": 0.47,
+        "outstanding_amount": 0.58,
+        "payment_coverage": 0.69,
+        "waiver_amount": 47.4,
+        "entitlement_units": 49.3,
+        "assessment_amount": 51.2,
+        "fx_variance": 0.36,
+        "delinquency_risk": 0.47,
+        "service_cost": 56.9,
+        "invoice_count": 58.8
+      },
+      "state": "assessed",
+      "source": "synthetic-local-acceptance"
+    }
+  ]
+}
