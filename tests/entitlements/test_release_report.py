@@ -163,7 +163,9 @@ class EndToEndTests(unittest.TestCase):
     def test_manifest_lists_all_json_artifacts(self):
         run(FIXTURE, self.database, self.output)
         manifest = json.loads((self.output / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(manifest["files"]), {"summary.json", "decisions.json", "audit-events.json"})
+        self.assertEqual(set(manifest["files"]), {"summary.json", "decisions.json", "audit-events.json",
+                                                  "reconciliation.json", "reconciliation.csv",
+                                                  "corrections.csv", "release-explanations.csv"})
         self.assertGreater(manifest["rule_rows"], 500)
 
     def test_records_csv_has_one_row_per_record(self):
@@ -199,6 +201,80 @@ class EndToEndTests(unittest.TestCase):
         result = application.inspect()
         self.assertEqual(len(result["records"]), len(load_records()))
         self.assertEqual(len(result["decisions"]), len(load_records()))
+
+
+class ReconciliationAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.database = self.root / "run.sqlite3"
+        self.output = self.root / "output"
+        self.result = run(FIXTURE, self.database, self.output)
+
+    def test_totals_reconcile_with_a_closed_period(self):
+        totals = self.result["reconciliation"]
+        self.assertTrue(totals["identity_holds"])
+        self.assertEqual(totals["explained_amount"], totals["charged"])
+        self.assertEqual(self.result["closed_periods"], ["2026Q1"])
+
+    def test_release_report_explains_every_bucket(self):
+        report = Application(self.database).release_report()
+        self.assertEqual(set(report["totals"]), {
+            "charged", "receipts_settled", "receipts_cash_applied", "fx_variance", "waiver_amount",
+            "outstanding_amount", "overpayment_credit", "entitlement_units", "releasable_units",
+            "explained_amount", "identity_holds", "coverage_ratio"})
+        self.assertTrue(all(row["identity_holds"] for row in report["charges"]))
+        self.assertTrue(all(row["identity_holds"] for row in report["explanation"]))
+        self.assertGreater(len(report["explanation"]), 0)
+
+    def test_fx_receipts_preserve_original_currency_and_rate_evidence(self):
+        report = Application(self.database).release_report()
+        by_charge = {row["charge_id"]: row for row in report["charges"]}
+        # A EUR receipt settles charge-001 so FX variance and cash applied differ.
+        self.assertNotEqual(by_charge["charge-001"]["receipts_cash_applied"],
+                            by_charge["charge-001"]["receipts_settled"])
+        self.assertGreater(float(by_charge["charge-001"]["fx_variance"]), 0.0)
+
+    def test_waiver_is_reported_separately_from_arrears(self):
+        report = Application(self.database).release_report()
+        by_charge = {row["charge_id"]: row for row in report["charges"]}
+        self.assertEqual(by_charge["charge-003"]["waiver_amount"], "5.00")
+        self.assertGreater(float(by_charge["charge-003"]["outstanding_amount"]), 0.0)
+
+    def test_late_correction_is_traced_to_the_closed_period(self):
+        report = Application(self.database).release_report()
+        correction_periods = {row["charge_id"]: row["correction_periods"] for row in report["charges"]}
+        self.assertIn("2026Q1-CORR-1", correction_periods["charge-004"])
+        kinds = [item["kind"] for item in report["corrections"]]
+        self.assertIn("late_receipt", kinds)
+        self.assertIn("late_allocation", kinds)
+
+    def test_reconciliation_artifacts_are_present_and_verified(self):
+        for name in ("reconciliation.json", "reconciliation.csv", "corrections.csv",
+                     "release-explanations.csv"):
+            self.assertTrue((self.output / name).is_file(), name)
+        self.assertEqual(verify_bundle(self.output), [])
+        self.assertTrue(verify(self.database, self.output)["ok"])
+
+    def test_tampered_reconciliation_is_detected(self):
+        path = self.output / "reconciliation.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["charges"][0]["outstanding_amount"] = "0.00"
+        path.write_text(json.dumps(report), encoding="utf-8")
+        errors = verify_bundle(self.output)
+        self.assertIn("reconciliation.json hash mismatch", errors)
+
+    def test_repeated_run_stays_reconciled_and_idempotent(self):
+        again = run(FIXTURE, self.database, self.output)
+        self.assertEqual(again["reconciliation"], self.result["reconciliation"])
+        self.assertEqual(verify(self.database, self.output)["reconciliation_errors"], [])
+
+    def test_closing_an_already_closed_period_is_stable(self):
+        application = Application(self.database)
+        first = application.close_period("2026Q1", "2026-03-31")
+        second = application.close_period("2026Q1", "2026-03-31")
+        self.assertEqual(first["snapshot"]["snapshot_hash"], second["snapshot"]["snapshot_hash"])
 
 
 class ScenarioVariationTests(unittest.TestCase):

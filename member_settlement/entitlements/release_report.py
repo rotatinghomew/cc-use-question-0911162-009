@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -60,20 +62,76 @@ def build_summary(records: list[DomainRecord], decisions: Mapping[str, Decision]
 
 
 def export_bundle(output: str | Path, records: list[DomainRecord], decisions: Mapping[str, Decision],
-                  snapshot: Mapping[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+                  snapshot: Mapping[str, Any], events: list[dict[str, Any]],
+                  reconciliation: Mapping[str, Any] | None = None) -> dict[str, Any]:
     root = ensure_output(output)
     summary = build_summary(records, decisions, snapshot)
+    if reconciliation is not None:
+        summary["reconciliation"] = {
+            "settlement_currency": reconciliation.get("settlement_currency"),
+            "totals": reconciliation.get("totals"),
+            "closed_periods": reconciliation.get("closed_periods", []),
+        }
     record_count = write_records(root / "records.csv", records, decisions)
     rule_count = write_rules(root / "rules.csv", decisions)
-    summary_hash = write_json(root / "summary.json", summary)
-    decision_hash = write_json(root / "decisions.json", [value.as_dict() for _, value in sorted(decisions.items())])
-    event_hash = write_json(root / "audit-events.json", events)
-    manifest = {"files": {"summary.json": summary_hash, "decisions.json": decision_hash,
-                           "audit-events.json": event_hash}, "record_rows": record_count,
+    files: dict[str, str] = {}
+    files["summary.json"] = write_json(root / "summary.json", summary)
+    files["decisions.json"] = write_json(root / "decisions.json",
+                                         [value.as_dict() for _, value in sorted(decisions.items())])
+    files["audit-events.json"] = write_json(root / "audit-events.json", events)
+    if reconciliation is not None:
+        files["reconciliation.json"] = write_json(root / "reconciliation.json", dict(reconciliation))
+        files.update(write_reconciliation_csvs(root, reconciliation))
+    manifest = {"files": files, "record_rows": record_count,
                 "rule_rows": rule_count, "created_at": utc_now()}
     manifest["manifest_hash"] = stable_hash(manifest)
     write_json(root / "manifest.json", manifest)
     return manifest
+
+
+RECONCILIATION_FIELDS = ["charge_id", "member_id", "period_id", "currency", "charged",
+                         "receipts_settled", "receipts_cash_applied", "fx_variance", "waiver_amount",
+                         "outstanding_amount", "overpayment_credit", "entitlement_units",
+                         "releasable_units", "coverage_ratio", "identity_holds", "allocation_ids",
+                         "correction_periods"]
+
+
+def write_reconciliation_csvs(root: Path, reconciliation: Mapping[str, Any]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    rows = reconciliation.get("charges", [])
+    path = root / "reconciliation.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RECONCILIATION_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: (";".join(row[key]) if isinstance(row.get(key), list) else row.get(key, ""))
+                             for key in RECONCILIATION_FIELDS})
+    hashes["reconciliation.csv"] = sha256_file(path)
+
+    correction_fields = ["correction_id", "period_id", "correction_period_id", "kind", "subject_id", "reason"]
+    path = root / "corrections.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=correction_fields)
+        writer.writeheader()
+        for row in reconciliation.get("corrections", []):
+            writer.writerow({key: row.get(key, "") for key in correction_fields})
+    hashes["corrections.csv"] = sha256_file(path)
+
+    release_fields = ["charge_id", "member_id", "period_id", "currency", "entitlement_units",
+                      "releasable_units", "withheld_units", "coverage_ratio", "receipts_cash_applied",
+                      "identity_holds"]
+    path = root / "release-explanations.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=release_fields)
+        writer.writeheader()
+        for row in reconciliation.get("explanation", []):
+            writer.writerow({key: row.get(key, "") for key in release_fields})
+    hashes["release-explanations.csv"] = sha256_file(path)
+    return hashes
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def verify_bundle(output: str | Path) -> list[str]:
@@ -91,7 +149,32 @@ def verify_bundle(output: str | Path) -> list[str]:
         if not path.is_file():
             errors.append(f"{name} is missing")
             continue
+        if path.suffix == ".csv":
+            if sha256_file(path) != expected:
+                errors.append(f"{name} hash mismatch")
+            continue
         value = json.loads(path.read_text(encoding="utf-8"))
         if stable_hash(value) != expected:
             errors.append(f"{name} hash mismatch")
+    if (root / "reconciliation.json").is_file():
+        errors.extend(verify_reconciliation(root))
+    return errors
+
+
+def verify_reconciliation(root: Path) -> list[str]:
+    errors: list[str] = []
+    report = json.loads((root / "reconciliation.json").read_text(encoding="utf-8"))
+    for row in report.get("charges", []):
+        explained = (Decimal(str(row["receipts_settled"])) + Decimal(str(row["fx_variance"]))
+                     + Decimal(str(row["waiver_amount"])) + Decimal(str(row["outstanding_amount"]))
+                     - Decimal(str(row["overpayment_credit"])))
+        if explained != Decimal(str(row["charged"])):
+            errors.append(f"charge {row['charge_id']} reconciliation identity does not hold")
+        if not row.get("identity_holds", False):
+            errors.append(f"charge {row['charge_id']} is marked unreconciled")
+        if Decimal(str(row["releasable_units"])) > Decimal(str(row["entitlement_units"])):
+            errors.append(f"charge {row['charge_id']} releases more units than it grants")
+    totals = report.get("totals", {})
+    if not totals.get("identity_holds", False):
+        errors.append("reconciliation totals do not balance")
     return errors

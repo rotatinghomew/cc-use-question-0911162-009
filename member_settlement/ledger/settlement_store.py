@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from member_settlement.accounts.member import Decision, DomainRecord, ContractError, canonical_json, stable_hash, utc_now
+from member_settlement.payments.reconciliation import (
+    Allocation, Charge, FxRate, Receipt, ReconciliationBook, Waiver,
+)
 
 
 SCHEMA = """
@@ -60,9 +63,59 @@ CREATE TABLE IF NOT EXISTS runs(
     started_at TEXT NOT NULL,
     finished_at TEXT
 );
+CREATE TABLE IF NOT EXISTS fx_rates(
+    base TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    rate_date TEXT NOT NULL,
+    rate_json TEXT NOT NULL,
+    PRIMARY KEY(base, quote, rate_date)
+);
+CREATE TABLE IF NOT EXISTS charges(
+    charge_id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL,
+    period_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    charge_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS receipts(
+    payment_id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL,
+    original_period_id TEXT NOT NULL,
+    correction_period_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS allocations(
+    allocation_id TEXT PRIMARY KEY,
+    payment_id TEXT NOT NULL,
+    charge_id TEXT NOT NULL,
+    correction_period_id TEXT NOT NULL,
+    allocation_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS waivers(
+    waiver_id TEXT PRIMARY KEY,
+    charge_id TEXT NOT NULL,
+    correction_period_id TEXT NOT NULL,
+    waiver_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS period_closes(
+    period_id TEXT PRIMARY KEY,
+    closes_on TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS corrections(
+    correction_id TEXT PRIMARY KEY,
+    period_id TEXT NOT NULL,
+    correction_period_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    correction_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_records_state ON records(state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_events_aggregate ON events(aggregate_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_record ON decisions(record_id, decided_at);
+CREATE INDEX IF NOT EXISTS idx_charges_period ON charges(period_id, member_id);
+CREATE INDEX IF NOT EXISTS idx_allocations_charge ON allocations(charge_id, payment_id);
+CREATE INDEX IF NOT EXISTS idx_period_closes_date ON period_closes(closes_on);
 """
 
 
@@ -233,7 +286,9 @@ class Repository:
     def snapshot(self) -> dict[str, Any]:
         with self.connect() as connection:
             counts = {table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                      for table in ("records", "record_versions", "decisions", "events", "runs")}
+                      for table in ("records", "record_versions", "decisions", "events", "runs",
+                                    "fx_rates", "charges", "receipts", "allocations", "waivers",
+                                    "period_closes", "corrections")}
             states = {row[0]: row[1] for row in connection.execute("SELECT state,COUNT(*) FROM records GROUP BY state")}
         return {"counts": counts, "states": states, "chain_errors": self.verify_chain()}
 
@@ -246,3 +301,189 @@ class Repository:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM events ORDER BY event_id").fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
+
+    # ------------------------------------------------------------ reconciliation
+    def save_fx_rate(self, rate: FxRate) -> None:
+        body = canonical_json(rate.as_dict())
+        with self.transaction() as connection:
+            existing = connection.execute(
+                "SELECT rate_json FROM fx_rates WHERE base=? AND quote=? AND rate_date=?",
+                (rate.base, rate.quote, rate.rate_date.isoformat())).fetchone()
+            if existing and existing[0] != body:
+                raise ContractError(
+                    f"historical FX rate {rate.base}/{rate.quote} {rate.rate_date.isoformat()} is immutable")
+            if existing:
+                return
+            latest = connection.execute(
+                "SELECT MAX(closes_on) FROM period_closes WHERE closes_on >= ?",
+                (rate.rate_date.isoformat(),)).fetchone()[0]
+            if latest is not None:
+                raise ContractError(
+                    f"historical FX rate dated {rate.rate_date.isoformat()} is immutable: "
+                    f"period closing {latest} already froze it")
+            connection.execute(
+                "INSERT INTO fx_rates(base,quote,rate_date,rate_json) VALUES(?,?,?,?)",
+                (rate.base, rate.quote, rate.rate_date.isoformat(), body))
+            sequence = connection.execute("SELECT COUNT(*) FROM events WHERE aggregate_id=?",
+                                          (f"fx:{rate.base}/{rate.quote}",)).fetchone()[0]
+            self.append_event(connection, "fx_rate.recorded", f"fx:{rate.base}/{rate.quote}",
+                              sequence + 1, rate.as_dict())
+
+    def save_charge(self, charge: Charge) -> None:
+        body = canonical_json(charge.as_dict())
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT version,charge_json FROM charges WHERE charge_id=?",
+                                          (charge.charge_id,)).fetchone()
+            if existing:
+                if existing[1] == body:
+                    return
+                if charge.version <= existing[0]:
+                    raise ContractError("charge version must advance")
+            connection.execute(
+                "INSERT INTO charges(charge_id,member_id,period_id,version,charge_json) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(charge_id) DO UPDATE SET member_id=excluded.member_id,"
+                "period_id=excluded.period_id,version=excluded.version,charge_json=excluded.charge_json",
+                (charge.charge_id, charge.member_id, charge.period_id, charge.version, body))
+            self.append_event(connection, "charge.saved", charge.charge_id, charge.version, charge.as_dict())
+
+    def save_receipt(self, receipt: Receipt) -> None:
+        body = canonical_json(receipt.as_dict())
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT receipt_json FROM receipts WHERE payment_id=?",
+                                          (receipt.payment_id,)).fetchone()
+            if existing:
+                if existing[0] == body:
+                    return
+                if not receipt.reversed:
+                    raise ContractError("a posted receipt cannot be rewritten; reverse it instead")
+            connection.execute(
+                "INSERT INTO receipts(payment_id,member_id,original_period_id,correction_period_id,receipt_json) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(payment_id) DO UPDATE SET member_id=excluded.member_id,"
+                "original_period_id=excluded.original_period_id,"
+                "correction_period_id=excluded.correction_period_id,receipt_json=excluded.receipt_json",
+                (receipt.payment_id, receipt.member_id, receipt.original_period_id,
+                 receipt.correction_period_id, body))
+            sequence = connection.execute("SELECT COUNT(*) FROM events WHERE aggregate_id=?",
+                                          (f"receipt:{receipt.payment_id}",)).fetchone()[0]
+            self.append_event(connection, "receipt.saved", f"receipt:{receipt.payment_id}", sequence + 1,
+                              receipt.as_dict())
+
+    def save_allocation(self, allocation: Allocation) -> None:
+        body = canonical_json(allocation.as_dict())
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT allocation_json FROM allocations WHERE allocation_id=?",
+                                          (allocation.allocation_id,)).fetchone()
+            if existing:
+                if existing[0] == body:
+                    return
+                if not allocation.reversed:
+                    raise ContractError("a posted allocation cannot be rewritten; reverse it instead")
+            connection.execute(
+                "INSERT INTO allocations(allocation_id,payment_id,charge_id,correction_period_id,allocation_json) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(allocation_id) DO UPDATE SET "
+                "payment_id=excluded.payment_id,charge_id=excluded.charge_id,"
+                "correction_period_id=excluded.correction_period_id,allocation_json=excluded.allocation_json",
+                (allocation.allocation_id, allocation.payment_id, allocation.charge_id,
+                 allocation.correction_period_id, body))
+            sequence = connection.execute("SELECT COUNT(*) FROM events WHERE aggregate_id=?",
+                                          (f"allocation:{allocation.allocation_id}",)).fetchone()[0]
+            self.append_event(connection, "allocation.saved", f"allocation:{allocation.allocation_id}",
+                              sequence + 1, allocation.as_dict())
+
+    def save_waiver(self, waiver: Waiver) -> None:
+        body = canonical_json(waiver.as_dict())
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT waiver_json FROM waivers WHERE waiver_id=?",
+                                          (waiver.waiver_id,)).fetchone()
+            if existing:
+                if existing[0] == body:
+                    return
+                if not waiver.reversed:
+                    raise ContractError("a posted waiver cannot be rewritten; reverse it instead")
+            connection.execute(
+                "INSERT INTO waivers(waiver_id,charge_id,correction_period_id,waiver_json) VALUES(?,?,?,?) "
+                "ON CONFLICT(waiver_id) DO UPDATE SET charge_id=excluded.charge_id,"
+                "correction_period_id=excluded.correction_period_id,waiver_json=excluded.waiver_json",
+                (waiver.waiver_id, waiver.charge_id, waiver.correction_period_id, body))
+            sequence = connection.execute("SELECT COUNT(*) FROM events WHERE aggregate_id=?",
+                                          (f"waiver:{waiver.waiver_id}",)).fetchone()[0]
+            self.append_event(connection, "waiver.saved", f"waiver:{waiver.waiver_id}", sequence + 1,
+                              waiver.as_dict())
+
+    def save_period_close(self, snapshot: Mapping[str, Any]) -> None:
+        period_id = str(snapshot["period_id"])
+        body = canonical_json(snapshot)
+        snapshot_hash = str(snapshot["snapshot_hash"])
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT snapshot_hash FROM period_closes WHERE period_id=?",
+                                          (period_id,)).fetchone()
+            if existing:
+                if existing[0] == snapshot_hash:
+                    return
+                raise ContractError(f"closed period {period_id} history is immutable")
+            connection.execute(
+                "INSERT INTO period_closes(period_id,closes_on,snapshot_json,snapshot_hash) VALUES(?,?,?,?)",
+                (period_id, str(snapshot["closes_on"]), body, snapshot_hash))
+            self.append_event(connection, "period.closed", f"period:{period_id}", 1,
+                              {"snapshot_hash": snapshot_hash, "closes_on": str(snapshot["closes_on"])})
+
+    def save_correction(self, correction: Mapping[str, Any]) -> None:
+        body = canonical_json(correction)
+        with self.transaction() as connection:
+            existing = connection.execute("SELECT correction_json FROM corrections WHERE correction_id=?",
+                                          (correction["correction_id"],)).fetchone()
+            if existing:
+                if existing[0] == body:
+                    return
+                raise ContractError("correction history is immutable")
+            connection.execute(
+                "INSERT INTO corrections(correction_id,period_id,correction_period_id,kind,correction_json) "
+                "VALUES(?,?,?,?,?)",
+                (correction["correction_id"], correction["period_id"],
+                 correction["correction_period_id"], correction["kind"], body))
+            self.append_event(connection, "correction.recorded",
+                              f"correction:{correction['correction_id']}", 1, dict(correction))
+
+    def reconciliation_rows(self) -> dict[str, list[Any]]:
+        with self.connect() as connection:
+            rates = [FxRate(**json.loads(row[0])) for row in
+                     connection.execute("SELECT rate_json FROM fx_rates ORDER BY base,quote,rate_date")]
+            charges = [Charge(**json.loads(row[0])) for row in
+                       connection.execute("SELECT charge_json FROM charges ORDER BY charge_id")]
+            receipts = [Receipt(**json.loads(row[0])) for row in
+                        connection.execute("SELECT receipt_json FROM receipts ORDER BY payment_id")]
+            allocations = [Allocation(**json.loads(row[0])) for row in
+                           connection.execute("SELECT allocation_json FROM allocations ORDER BY allocation_id")]
+            waivers = [Waiver(**json.loads(row[0])) for row in
+                       connection.execute("SELECT waiver_json FROM waivers ORDER BY waiver_id")]
+            closes = [json.loads(row[0]) for row in
+                      connection.execute("SELECT snapshot_json FROM period_closes ORDER BY closes_on")]
+            corrections = [json.loads(row[0]) for row in
+                           connection.execute("SELECT correction_json FROM corrections ORDER BY correction_id")]
+        return {"rates": rates, "charges": charges, "receipts": receipts, "allocations": allocations,
+                "waivers": waivers, "closes": closes, "corrections": corrections}
+
+    def load_reconciliation_book(self, settlement_currency: str = "USD") -> ReconciliationBook:
+        book = ReconciliationBook(settlement_currency)
+        rows = self.reconciliation_rows()
+        book.restore(rates=rows["rates"], charges=rows["charges"], receipts=rows["receipts"],
+                     allocations=rows["allocations"], waivers=rows["waivers"],
+                     corrections=rows["corrections"], closes=rows["closes"],
+                     settlement_currency=settlement_currency)
+        return book
+
+    def persist_reconciliation(self, book: ReconciliationBook) -> None:
+        for rate in book.rates:
+            self.save_fx_rate(rate)
+        for charge in book.charges:
+            self.save_charge(charge)
+        for receipt in book.receipts:
+            self.save_receipt(receipt)
+        for allocation in book.allocations:
+            self.save_allocation(allocation)
+        for waiver in book.waivers:
+            self.save_waiver(waiver)
+        for snapshot in book.closed_period_snapshots():
+            self.save_period_close(snapshot)
+        for correction in book.corrections:
+            self.save_correction(correction)

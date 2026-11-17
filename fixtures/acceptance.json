@@ -154,5 +154,145 @@
       "state": "assessed",
       "source": "synthetic-local-acceptance"
     }
+  ],
+  "settlement_currency": "USD",
+  "postings": [
+    {
+      "kind": "rate",
+      "base": "EUR",
+      "quote": "USD",
+      "rate": "1.0800",
+      "rate_date": "2026-01-15",
+      "source": "ecb"
+    },
+    {
+      "kind": "rate",
+      "base": "EUR",
+      "quote": "USD",
+      "rate": "1.1200",
+      "rate_date": "2026-02-15",
+      "source": "ecb"
+    },
+    {
+      "kind": "rate",
+      "base": "JPY",
+      "quote": "USD",
+      "rate": "0.006700",
+      "rate_date": "2026-01-15",
+      "source": "ecb"
+    },
+    {
+      "kind": "rate",
+      "base": "JPY",
+      "quote": "USD",
+      "rate": "0.006900",
+      "rate_date": "2026-02-15",
+      "source": "ecb"
+    },
+    {
+      "kind": "charge",
+      "charge_id": "charge-001",
+      "member_id": "member_id-1",
+      "record_id": "member_account-001",
+      "period_id": "2026Q1",
+      "currency": "USD",
+      "amount": "25.30",
+      "issued_on": "2026-01-20",
+      "reference_rate_date": "2026-01-15",
+      "entitlement_units": "23.4"
+    },
+    {
+      "kind": "charge",
+      "charge_id": "charge-002",
+      "member_id": "member_id-2",
+      "record_id": "member_account-002",
+      "period_id": "2026Q1",
+      "currency": "USD",
+      "amount": "29.00",
+      "issued_on": "2026-01-20",
+      "reference_rate_date": "2026-01-15",
+      "entitlement_units": "27.1"
+    },
+    {
+      "kind": "charge",
+      "charge_id": "charge-003",
+      "member_id": "member_id-3",
+      "record_id": "member_account-003",
+      "period_id": "2026Q1",
+      "currency": "USD",
+      "amount": "32.70",
+      "issued_on": "2026-01-20",
+      "reference_rate_date": "2026-01-15",
+      "entitlement_units": "30.8"
+    },
+    {
+      "kind": "charge",
+      "charge_id": "charge-004",
+      "member_id": "member_id-4",
+      "record_id": "member_account-004",
+      "period_id": "2026Q1",
+      "currency": "USD",
+      "amount": "36.40",
+      "issued_on": "2026-01-20",
+      "reference_rate_date": "2026-01-15",
+      "entitlement_units": "34.5"
+    },
+    {
+      "kind": "receipt",
+      "payment_id": "payment-001",
+      "member_id": "member_id-1",
+      "original_currency": "EUR",
+      "original_amount": "20.00",
+      "paid_on": "2026-02-16",
+      "charge_id": "charge-001",
+      "reference": "SWIFT-001"
+    },
+    {
+      "kind": "receipt",
+      "payment_id": "payment-002",
+      "member_id": "member_id-2",
+      "original_currency": "JPY",
+      "original_amount": "3800",
+      "paid_on": "2026-02-17",
+      "charge_id": "charge-002",
+      "reference": "SWIFT-002"
+    },
+    {
+      "kind": "receipt",
+      "payment_id": "payment-003",
+      "member_id": "member_id-3",
+      "original_currency": "USD",
+      "original_amount": "10.00",
+      "paid_on": "2026-02-18",
+      "charge_id": "charge-003",
+      "reference": "ACH-003"
+    },
+    {
+      "kind": "waiver",
+      "waiver_id": "waiver-001",
+      "charge_id": "charge-003",
+      "currency": "USD",
+      "amount": "5.00",
+      "approved_on": "2026-02-20",
+      "reason": "documented hardship relief"
+    },
+    {
+      "kind": "close",
+      "period_id": "2026Q1",
+      "opens_on": "2026-01-01",
+      "closes_on": "2026-03-31"
+    },
+    {
+      "kind": "receipt",
+      "payment_id": "payment-004",
+      "member_id": "member_id-4",
+      "original_currency": "EUR",
+      "original_amount": "15.00",
+      "paid_on": "2026-02-25",
+      "charge_id": "charge-004",
+      "correction_period_id": "2026Q1-CORR-1",
+      "reason": "bank advice received after close",
+      "reference": "SWIFT-004"
+    }
   ]
 }
